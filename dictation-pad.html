@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Dictation Pad</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "SF Pro Text", "Noto Sans Thai", sans-serif;
+    background: #101014; color: #e8e8ee; height: 100vh; padding: 10px;
+    display: flex; gap: 10px; align-items: stretch;
+  }
+  .side { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .mic {
+    width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer; flex: none;
+    background: #2a2a33; color: #9aa0ff; display: grid; place-items: center;
+    transition: background .15s;
+  }
+  .mic:hover { background: #33333f; }
+  .mic.listening { background: rgba(154,160,255,.10); box-shadow: inset 0 0 0 1.5px #9aa0ff, 0 0 16px rgba(154,160,255,.25); }
+  .mic svg { width: 24px; height: 24px; fill: currentColor; }
+  /* แท่งคลื่นเสียงแบบ Siri — ความสูงตั้งจาก JS ตามความดังไมค์ */
+  .bars { display: none; gap: 3px; align-items: center; height: 30px; }
+  .bars i { width: 4px; height: 4px; border-radius: 2px; background: #9aa0ff; transition: height 60ms linear; }
+  .mic.listening svg { display: none; }
+  .mic.listening .bars { display: flex; }
+  select {
+    background: #23232c; color: #a0a0b0; border: 1px solid #3a3a46; border-radius: 6px;
+    padding: 2px 4px; font-size: 11px; width: 52px;
+  }
+  .main { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  textarea {
+    flex: 1; resize: none; background: #17171d; color: #f0f0f5; border: 1px solid #33333f;
+    border-radius: 8px; padding: 8px 10px; font-size: 14px; line-height: 1.5; font-family: inherit;
+  }
+  #status { font-size: 11px; color: #8b8b99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.err { color: #ff8a80; }
+  /* จุดสถานะ: live = กำลังฟัง (ม่วงฟ้ากะพริบ), busy = whisper กำลังแปลง (เทา) */
+  #status.live::before, #status.busy::before {
+    content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 6px; vertical-align: 1px; background: #9aa0ff; animation: blink 1.5s ease-in-out infinite;
+  }
+  #status.busy::before { background: #6c6c7a; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .interim { color: #8b8b99; font-style: italic; }
+</style>
+</head>
+<body>
+  <div class="side">
+    <button class="mic" id="mic" title="เริ่ม/หยุดฟัง (Space)">
+      <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+      <span class="bars"><i></i><i></i><i></i><i></i><i></i></span>
+    </button>
+    <select id="lang" title="ภาษา">
+      <option value="th-TH" selected>ไทย</option>
+      <option value="en-US">EN</option>
+    </select>
+  </div>
+  <div class="main">
+    <textarea id="out" placeholder="กด Space แล้วพูด — หยุดพูดแล้ว copy ให้อัตโนมัติ"></textarea>
+    <div id="status">พร้อม — กด Space เพื่อเริ่ม</div>
+  </div>
+
+<script>
+(() => {
+  // หน้าต่างเล็ก (Chrome app-mode อนุญาต resizeTo) — launcher ก็ส่ง --window-size ด้วย
+  const BASE_H = 150, MAX_H = 700;
+  const MARGIN = 16;
+  // ตั้งขนาด + ยึดมุมล่างขวาของจอ (ขยายสูงแล้วโตขึ้นด้านบน ไม่ล้นจอ)
+  function place(h) {
+    window.resizeTo(440, h);
+    window.moveTo(screen.availLeft + screen.availWidth - 440 - MARGIN,
+                  screen.availTop + screen.availHeight - h - MARGIN);
+  }
+  try { place(BASE_H); } catch (_) {}
+  // ขยายความสูงหน้าต่างตามข้อความ (ไม่ต้อง scroll เอง) — ชนเพดาน MAX_H แล้วค่อย scroll ไปท้ายสุด
+  function fit() {
+    const over = Math.max(out.scrollHeight - out.clientHeight, 0)
+               + Math.max(document.documentElement.scrollHeight - innerHeight, 0);
+    if (over > 0 && outerHeight < MAX_H) place(Math.min(outerHeight + over, MAX_H));
+    out.scrollTop = out.scrollHeight;
+  }
+  function shrink() { if (outerHeight > BASE_H) place(BASE_H); }
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = document.getElementById('mic');
+  const statusEl = document.getElementById('status');
+  const out = document.getElementById('out');
+  const lang = document.getElementById('lang');
+  // ponytail: whisper เป็นแค่ fallback ตอน engine Google ตาย — อยู่แค่ใน session นี้ (reload = กลับ Google)
+  let useWhisper = false;
+
+  if (!SR) {
+    statusEl.textContent = 'Browser นี้ไม่รองรับ SpeechRecognition — กรุณาใช้ Google Chrome';
+    statusEl.className = 'err';
+    mic.disabled = true;
+    return;
+  }
+
+  let rec = null, listening = false, wantListening = false, deadStreak = 0;
+
+  function build() {
+    const r = new SR();
+    let alive = false;   // session นี้เริ่มจับเสียงจริงหรือยัง (engine ตาย = จบทันทีโดยไม่มี onaudiostart)
+    r.lang = lang.value;
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    r.onaudiostart = () => { alive = true; };
+    r.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) out.value = (out.value ? out.value + ' ' : '') + t.trim();
+        else interim += t;
+      }
+      renderInterim(interim);
+      fit();
+    };
+    r.onend = () => {
+      if (wantListening) {
+        if (!alive) {
+          // จบทันทีโดยไม่เคยจับเสียง = engine Google ตาย (Chromium bug socket-leak/reuse) — สลับ whisper เอง
+          if (++deadStreak >= 2) {
+            useWhisper = true;
+            status('🌐 Google ตาย → ใช้ 🧠 Whisper แทน (restart Chrome เพื่อกลับ)', true);
+            startWhisper().catch(e => status('เริ่มไม่สำเร็จ: ' + e.message, true));
+            return;
+          }
+        } else deadStreak = 0;
+        rec = build(); try { rec.start(); } catch (_) {}   // สร้าง instance ใหม่ทุกครั้ง — กัน Chromium bug เรื่อง reuse instance
+      }
+      else { listening = false; setUI(false); maybeCopy(); }
+    };
+    r.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        wantListening = false;
+        status('ไม่ได้รับสิทธิ์ไมค์ — อนุญาตไมค์ให้ Chrome แล้วลองใหม่', true);
+      } else if (e.error === 'network') {
+        status('เชื่อมต่อ engine ไม่ได้ — ต้องออนไลน์', true);
+      } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        status('error: ' + e.error, true);
+      }
+    };
+    return r;
+  }
+
+  let interimEl = null;
+  function renderInterim(text) {
+    if (!interimEl) {
+      interimEl = document.createElement('div');
+      interimEl.className = 'interim';
+      out.parentNode.insertBefore(interimEl, out.nextSibling);
+    }
+    interimEl.textContent = text ? '… ' + text : '';
+  }
+  function status(t, isErr, dot) { statusEl.textContent = t; statusEl.className = isErr ? 'err' : (dot || ''); }
+  // ---- แท่งคลื่นเสียง: เปิด stream ไมค์แยก (macOS แชร์ไมค์ได้) วัด RMS ทุกเฟรม ----
+  const bars = [...mic.querySelectorAll('.bars i')];
+  const SHAPE = [0.45, 0.75, 1, 0.75, 0.45];
+  let meter = null;
+  async function startMeter() {
+    if (meter) return;
+    meter = {};
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!meter) { stream.getTracks().forEach(t => t.stop()); return; }   // หยุดไปก่อนไมค์พร้อม
+      const ctx = new AudioContext(), an = ctx.createAnalyser();
+      an.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(an);
+      const buf = new Uint8Array(an.fftSize), h = SHAPE.map(() => 4);
+      Object.assign(meter, { stream, ctx });
+      const tick = () => {
+        if (!meter) return;
+        an.getByteTimeDomainData(buf);
+        let sum = 0; for (const v of buf) sum += (v - 128) ** 2;
+        const level = Math.min(Math.sqrt(sum / buf.length) / 30, 1);   // 30 = ความไว (ลดเลข = แท่งสูงง่ายขึ้น)
+        bars.forEach((b, i) => {
+          const target = 4 + 26 * level * SHAPE[i] * (0.7 + Math.random() * 0.3);
+          h[i] += (target - h[i]) * 0.5;
+          b.style.height = h[i].toFixed(1) + 'px';
+        });
+        meter.raf = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (_) { meter = null; }   // ไม่ได้ไมค์ก็แค่ไม่มีแท่ง — ไม่กระทบการฟัง
+  }
+  function stopMeter() {
+    if (!meter) return;
+    cancelAnimationFrame(meter.raf);
+    meter.stream?.getTracks().forEach(t => t.stop());
+    meter.ctx?.close();
+    meter = null;
+    bars.forEach(b => b.style.height = '4px');
+  }
+
+  function setUI(on) {
+    mic.classList.toggle('listening', on);
+    on ? startMeter() : stopMeter();
+    on ? status(mediaRec ? 'อัด (whisper)… Space = แปลงเสียง' : 'กำลังฟัง… พูดได้เลย', false, 'live') : status('หยุดแล้ว');
+  }
+
+  // ---- Whisper (engine ในเครื่อง, fallback) ----
+  let mediaRec = null, mediaChunks = [];
+  async function startWhisper() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaChunks = [];
+    mediaRec = new MediaRecorder(stream);
+    mediaRec.ondataavailable = (e) => { if (e.data && e.data.size) mediaChunks.push(e.data); };
+    mediaRec.onstop = async () => {
+      const mime = (mediaRec && mediaRec.mimeType) || 'audio/webm';
+      stream.getTracks().forEach(t => t.stop());
+      mediaRec = null; listening = false; setUI(false);
+      status('กำลังแปลงเสียง (whisper)…', false, 'busy');
+      try {
+        const blob = new Blob(mediaChunks, { type: mime });
+        const langCode = lang.value.slice(0, 2);
+        const resp = await fetch('/stt?lang=' + langCode, { method: 'POST', headers: { 'content-type': mime }, body: blob });
+        const j = await resp.json();
+        if (!j.ok) { status('🧠 whisper ล้มเหลว: ' + (j.error || '?'), true); return; }
+        const t = (j.text || '').trim();
+        if (t) out.value = (out.value ? out.value + ' ' : '') + t;
+        renderInterim(''); fit();
+        maybeCopy();
+      } catch (e) { status('🧠 whisper ล้มเหลว: ' + e.message, true); }
+    };
+    mediaRec.start();
+    listening = true; setUI(true);
+  }
+
+  function maybeCopy() {
+    if (!out.value) return;
+    navigator.clipboard.writeText(out.value).then(
+      () => { status('copy แล้ว ✅ — ⌘V วางได้เลย'); out.value = ''; renderInterim(''); shrink(); },
+      () => status('copy ไม่สำเร็จ — ข้อความยังอยู่ในช่อง', true)
+    );
+  }
+
+  mic.addEventListener('click', () => {
+    if (listening) {
+      if (mediaRec) { try { mediaRec.stop(); } catch (_) {} return; }
+      wantListening = false; rec.stop(); return;
+    }
+    if (useWhisper) { startWhisper().catch(e => status('เริ่มไม่สำเร็จ: ' + e.message, true)); return; }
+    rec = build();
+    wantListening = true;
+    try { rec.start(); listening = true; setUI(true); }
+    catch (e) { status('เริ่มไม่สำเร็จ: ' + e.message, true); }
+  });
+
+  lang.addEventListener('change', () => { if (listening && rec) { rec.stop(); rec = build(); rec.start(); } });
+  out.addEventListener('input', fit);
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); mic.click(); }
+  });
+})();
+</script>
+</body>
+</html>

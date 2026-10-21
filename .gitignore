@@ -1,0 +1,7 @@
+models/
+chrome-profile/
+*.bak*
+HANDOFF.md
+.DS_Store
+*.log
+.env*
