@@ -6,9 +6,10 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 
-const PORT = 8917;
+const PORT = Number(process.env.PORT) || 8917;
 const DIR = __dirname;
 const DEFAULT_TARGET = 'T3 Code (Nightly)'; // AppleScript app name of the target input app
+const PREV_APP_FILE = process.env.DICTATION_PAD_PREV_APP_FILE || '/tmp/dictation-pad-prev-app';
 
 // ผู้เข้าเกี่ยวข้อง: coding agents + GUI chat + terminal apps
 const CANDIDATES = [
@@ -117,6 +118,20 @@ const server = http.createServer((req, res) => {
       const state = err ? 'error' : String(stdout).trim();
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ state }));
+    });
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/restore-focus') {
+    const reply = (state) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ state }));
+    };
+    fs.readFile(PREV_APP_FILE, 'utf8', (readErr, name) => {
+      const target = String(name || '').trim().replace(/[^A-Za-z0-9 ()\-_.]/g, '');
+      if (readErr || !target || target === 'osascript' || target === 'Google Chrome' || target === 'Dictation Pad') return reply('skipped');
+      execFile('osascript', ['-e', `tell application "System Events" to set frontmost of process "${target}" to true`], { timeout: 3000 }, (err) => {
+        reply(err ? 'error' : 'restored');
+      });
     });
     return;
   }

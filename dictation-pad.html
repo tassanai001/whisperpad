@@ -233,13 +233,17 @@
 
   function maybeCopy() {
     if (!out.value) return;
-    navigator.clipboard.writeText(out.value).then(
-      () => { status('copy แล้ว ✅ — ⌘V วางได้เลย'); out.value = ''; renderInterim(''); shrink(); },
-      () => status('copy ไม่สำเร็จ — ข้อความยังอยู่ในช่อง', true)
-    );
+    Promise.resolve().then(() => navigator.clipboard.writeText(out.value)).then(
+      async () => {
+        status('copy แล้ว ✅ — ⌘V วางได้เลย'); out.value = ''; renderInterim(''); shrink();
+        try { await fetch('/restore-focus', { signal: AbortSignal.timeout(2500) }); } catch (_) {}
+        setTimeout(() => window.close(), 250);
+      }
+    ).catch(() => status('copy ไม่สำเร็จ — ข้อความยังอยู่ในช่อง', true));
   }
 
   mic.addEventListener('click', () => {
+    autoStartDone = true;
     if (listening) {
       if (mediaRec) { try { mediaRec.stop(); } catch (_) {} return; }
       wantListening = false; rec.stop(); return;
@@ -250,6 +254,19 @@
     try { rec.start(); listening = true; setUI(true); }
     catch (e) { status('เริ่มไม่สำเร็จ: ' + e.message, true); }
   });
+
+  // รอจนหน้าต่าง Chrome ได้ทั้ง visibility และ OS focus ก่อนเริ่มขอไมค์
+  let autoStartDone = false, autoStartRetries = 0;
+  function autoStart() {
+    if (autoStartDone) return;
+    if (document.visibilityState === 'visible' && document.hasFocus()) {
+      autoStartDone = true;
+      mic.click();
+    } else if (++autoStartRetries < 20) setTimeout(autoStart, 250);
+  }
+  window.addEventListener('focus', autoStart);
+  document.addEventListener('visibilitychange', autoStart);
+  setTimeout(autoStart, 0);
 
   lang.addEventListener('change', () => { if (listening && rec) { rec.stop(); rec = build(); rec.start(); } });
   out.addEventListener('input', fit);

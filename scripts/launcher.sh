@@ -15,6 +15,22 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
+# จด app ที่กำลังใช้อยู่ก่อนเปิด Chrome เพื่อคืน focus หลังคัดลอกข้อความ
+PREV_APP_FILE="/tmp/dictation-pad-prev-app"
+PREV_APP=""
+for attempt in 1 2 3; do
+  PREV_APP="$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true and background only is false' 2>/dev/null | tr -d '\r')"
+  case "$PREV_APP" in
+    ''|osascript|"Google Chrome"|"Dictation Pad"|Terminal|"iTerm"|"iTerm2"|"Script Editor"|"Shortcuts Events")
+      [ "$attempt" -lt 3 ] && sleep 0.1
+      ;;
+    *)
+      printf '%s' "$PREV_APP" > "$PREV_APP_FILE"
+      break
+      ;;
+  esac
+done
+
 # 1) ปิด pad เก่า — จับผิดด้วย --user-data-dir เฉพาะของ pad เท่านั้น (ไม่แตะ Chrome หลัก / flow-chrome)
 pkill -f -- "--user-data-dir=$PROFILE" 2>/dev/null
 # รอจน pad เก่าตายจริง — ถ้ายังไม่ตาย open ใหม่จะส่งต่อไปให้ตัวที่กำลังปิด แล้วไม่มีหน้าต่างขึ้น
