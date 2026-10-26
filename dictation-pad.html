@@ -68,12 +68,11 @@
 (() => {
   // หน้าต่างเล็ก (Chrome app-mode อนุญาต resizeTo) — launcher ก็ส่ง --window-size ด้วย
   const BASE_H = 150, MAX_H = 700;
-  const MARGIN = 16;
-  // ตั้งขนาด + ยึดมุมล่างขวาของจอ (ขยายสูงแล้วโตขึ้นด้านบน ไม่ล้นจอ)
+  // ตั้งขนาด + จัดกลางจอ (ขยายสูงแล้ว center แนวตั้งคงเดิม)
   function place(h) {
     window.resizeTo(440, h);
-    window.moveTo(screen.availLeft + screen.availWidth - 440 - MARGIN,
-                  screen.availTop + screen.availHeight - h - MARGIN);
+    window.moveTo(screen.availLeft + Math.round((screen.availWidth - 440) / 2),
+                  screen.availTop + Math.round((screen.availHeight - h) / 2));
   }
   try { place(BASE_H); } catch (_) {}
   // ขยายความสูงหน้าต่างตามข้อความ (ไม่ต้อง scroll เอง) — ชนเพดาน MAX_H แล้วค่อย scroll ไปท้ายสุด
